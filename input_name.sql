@@ -1,4 +1,3 @@
-test
 stone_add_value
 magic_add_value
 infantry_add_value
