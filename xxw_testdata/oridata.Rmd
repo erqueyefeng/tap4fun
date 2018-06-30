@@ -1,0 +1,189 @@
+---
+title: "tap4fun"
+output: html_document
+---
+
+# 0. 准备
+```{r}
+# library(data.table)
+library(plyr)
+library(VvMT)
+library(fBasics)
+library(gridExtra)
+library(ggplot2)
+library(rpart)
+library(gbm)
+library(ROCR)
+library(pROC)
+library(dplyr)
+memory.limit(size = 50000)
+```
+
+# 1. 导入数据&衍生变量生成
+## (1) 导入原始数据
+```{r}
+alldata = fread('D:/play/tap4fun/tap4fun游戏玩家付费金额预测大赛/tap4fun竞赛数据/tap_fun_train.csv', header = T, stringsAsFactors = F, encoding = 'UTF-8')
+# predictdata = fread('D:/play/tap4fun/tap4fun游戏玩家付费金额预测大赛/tap4fun竞赛数据/tap_fun_test.csv', header = T, stringsAsFactors = F, encoding = 'UTF-8')
+alldata
+```
+## (2) 衍生变量生成
+```{r}
+alldata$register_date = as.Date(alldata$register_time)
+alldata$register_month = substr(alldata$register_time, 1, 7)
+alldata$register_weekday = weekdays(alldata$register_date)
+alldata$register_hour = substr(alldata$register_time, 12, 13)
+alldata$register_minute = substr(alldata$register_time, 12, 16)
+
+alldata$wood_consume_prop = alldata$wood_reduce_value / alldata$wood_add_value
+alldata$meat_consume_prop = alldata$meat_reduce_value / alldata$meat_add_value
+alldata$magic_consume_prop = alldata$magic_reduce_value / alldata$magic_add_value
+alldata$stone_consume_prop = alldata$stone_reduce_value / alldata$stone_add_value
+alldata$ivory_consume_prop = alldata$ivory_reduce_value / alldata$ivory_add_value
+alldata$resource_level1_add_value = alldata$wood_add_value + alldata$meat_add_value
+alldata$resource_level1_reduce_value = alldata$wood_reduce_value + alldata$meat_reduce_value
+alldata$resource_level1_consume_prop = alldata$resource_level1_reduce_value + alldata$resource_level1_add_value
+alldata$resource_level2_add_value = alldata$wood_add_value + alldata$meat_add_value + alldata$magic_add_value
+alldata$resource_level2_reduce_value = alldata$wood_reduce_value + alldata$meat_reduce_value + alldata$magic_reduce_value
+alldata$resource_level2_consume_prop = alldata$resource_level2_reduce_value + alldata$resource_level2_add_value
+alldata$resource_level3_add_value = alldata$wood_add_value + alldata$meat_add_value + alldata$magic_add_value + alldata$stone_add_value
+alldata$resource_level3_reduce_value = alldata$wood_reduce_value + alldata$meat_reduce_value + alldata$magic_reduce_value + alldata$stone_reduce_value
+alldata$resource_level3_consume_prop = alldata$resource_level3_reduce_value + alldata$resource_level3_add_value
+alldata$resource_add_value = alldata$wood_add_value + alldata$meat_add_value + alldata$magic_add_value + alldata$stone_add_value + alldata$ivory_add_value
+alldata$resource_reduce_value = alldata$wood_reduce_value + alldata$meat_reduce_value + alldata$magic_reduce_value + alldata$stone_reduce_value + alldata$ivory_reduce_value
+alldata$resource_consume_prop = alldata$resource_reduce_value + alldata$resource_add_value
+
+alldata$infantry_consume_prop = alldata$infantry_reduce_value / alldata$infantry_add_value
+alldata$cavalry_consume_prop = alldata$cavalry_reduce_value / alldata$cavalry_add_value
+alldata$shaman_consume_prop = alldata$shaman_reduce_value / alldata$shaman_add_value
+alldata$soldier_add_value = alldata$infantry_add_value + alldata$cavalry_add_value + alldata$shaman_add_value
+alldata$soldier_reduce_value = alldata$infantry_reduce_value + alldata$cavalry_reduce_value + alldata$shaman_reduce_value
+alldata$soldier_consume_prop = alldata$soldier_add_value / alldata$soldier_reduce_value
+
+alldata$wound_infantry_consume_prop = alldata$wound_infantry_reduce_value / alldata$wound_infantry_add_value
+alldata$wound_cavalry_consume_prop = alldata$wound_cavalry_reduce_value / alldata$wound_cavalry_add_value
+alldata$wound_shaman_consume_prop = alldata$wound_shaman_reduce_value / alldata$wound_shaman_add_value
+alldata$wound_soldier_add_value = alldata$wound_infantry_add_value + alldata$wound_cavalry_add_value + alldata$wound_shaman_add_value
+alldata$wound_soldier_reduce_value = alldata$wound_infantry_reduce_value + alldata$wound_cavalry_reduce_value + alldata$wound_shaman_reduce_value
+alldata$wound_soldier_consume_prop = alldata$wound_soldier_reduce_value / alldata$wound_soldier_add_value
+
+alldata$acceleration_add_value = alldata$general_acceleration_add_value + alldata$building_acceleration_add_value + alldata$reaserch_acceleration_add_value + 
+                                 alldata$training_acceleration_add_value + alldata$treatment_acceleraion_add_value
+alldata$acceleration_reduce_value = alldata$general_acceleration_reduce_value + alldata$building_acceleration_reduce_value + alldata$reaserch_acceleration_reduce_value +
+                                    alldata$training_acceleration_reduce_value + alldata$treatment_acceleration_reduce_value
+alldata$acceleration_consume_prop = alldata$acceleration_reduce_value / alldata$acceleration_add_value
+
+alldata$pvp_lanch_prop = alldata$pvp_lanch_count / alldata$pvp_battle_count
+alldata$pvp_win_prop = alldata$pvp_win_count / alldata$pvp_lanch_count
+alldata$pve_lanch_prop = alldata$pve_lanch_count / alldata$pve_battle_count
+alldata$pve_win_prop = alldata$pve_win_count / alldata$pve_battle_count
+
+alldata$is_pay_price = ifelse(alldata$pay_price > 0, 1, 0)
+alldata$target = ifelse(alldata$prediction_pay_price > 0, 1, 0)
+alldata$add_price = alldata$prediction_pay_price - alldata$pay_price
+alldata$add_target = ifelse(alldata$add_price > 0, 1, 0)
+
+alldata = ValueReplace(alldata, vars = c("wood_consume_prop", "meat_consume_prop", "magic_consume_prop", "stone_consume_prop", "ivory_consume_prop", "resource_level1_add_value", "resource_level1_reduce_value",
+                                         "resource_level1_consume_prop", "resource_level2_add_value", "resource_level2_reduce_value", "resource_level2_consume_prop", "resource_level3_add_value",
+                                         "resource_level3_reduce_value", "resource_level3_consume_prop", "resource_add_value", "resource_reduce_value", "resource_consume_prop", 
+                                         "infantry_consume_prop", "cavalry_consume_prop", "shaman_consume_prop", "soldier_add_value", "soldier_reduce_value",
+                                         "soldier_consume_prop", "wound_infantry_consume_prop", "wound_cavalry_consume_prop", "wound_shaman_consume_prop", "wound_soldier_add_value",
+                                         "wound_soldier_reduce_value", "wound_soldier_consume_prop", "acceleration_add_value", "acceleration_reduce_value", "acceleration_consume_prop",
+                                         "pvp_lanch_prop", "pvp_win_prop", "pve_lanch_prop", "pve_win_prop"), ori = NaN, new = '-2')
+
+alldata = ValueReplace(alldata, vars = c("wood_consume_prop", "meat_consume_prop", "magic_consume_prop", "stone_consume_prop", "ivory_consume_prop", "resource_level1_add_value", "resource_level1_reduce_value",
+                                         "resource_level1_consume_prop", "resource_level2_add_value", "resource_level2_reduce_value", "resource_level2_consume_prop", "resource_level3_add_value",
+                                         "resource_level3_reduce_value", "resource_level3_consume_prop", "resource_add_value", "resource_reduce_value", "resource_consume_prop", 
+                                         "infantry_consume_prop", "cavalry_consume_prop", "shaman_consume_prop", "soldier_add_value", "soldier_reduce_value",
+                                         "soldier_consume_prop", "wound_infantry_consume_prop", "wound_cavalry_consume_prop", "wound_shaman_consume_prop", "wound_soldier_add_value",
+                                         "wound_soldier_reduce_value", "wound_soldier_consume_prop", "acceleration_add_value", "acceleration_reduce_value", "acceleration_consume_prop",
+                                         "pvp_lanch_prop", "pvp_win_prop", "pve_lanch_prop", "pve_win_prop"), ori = 'Inf', new = '-1')
+
+VarStat(alldata, VarType(alldata), nstat = c("Miss", "Mean", "Min", "Max", "Median", "Num"))
+```
+
+## (3) 分群变量
+```{r}
+ddply(alldata, .(), summarise, 
+      cnt = length(user_id), add_target_cnt = sum(add_target), add_target_rto = mean(add_target), target_cnt = sum(target), target_rto = mean(target), rmse = sqrt(mean((prediction_pay_price - pay_price)^2)))
+
+ddply(alldata, .(is_pay_price), summarise, 
+      cnt = length(user_id), add_target_cnt = sum(add_target), add_target_rto = mean(add_target), target_cnt = sum(target), target_rto = mean(target), rmse = sqrt(mean((prediction_pay_price - pay_price)^2)))
+```
+
+
+## (4) 数据分群
+```{r}
+prepaydata = subset(alldata, is_pay_price == 1)
+nonprepaydata = subset(alldata, is_pay_price == 0)
+```
+
+
+
+# 2. 已购买人群分析
+## (1) 数据描述统计
+```{r}
+prepaydata_iv = CatVarImp(prepaydata[, c(3:150, 154)], yvar = 'add_target', method = 'iv', bins = 10)
+for (x in colnames(prepaydata)[c(3:150)]) {
+  CShipPlot(prepaydata, xvar = x, yvar = 'add_target', bins = 10, pdf = T, savedir = 'D:/play/tap4fun/tap4fun/xxw_testdata/plot/prepay/') 
+}
+
+prepaydata.numericvars.index = which(VarType(prepaydata)$numeric)
+prepaydata_iv; write.csv(prepaydata_iv[[2]], 'D:/play/tap4fun/tap4fun/xxw_testdata/plot/prepay/prepaydata_iv.csv', row.names = F)
+prepaydata_cor = data.frame(round(cor(prepaydata[, prepaydata.numericvars.index]),2)); write.csv(prepaydata_cor, 'D:/play/tap4fun/tap4fun/xxw_testdata/plot/prepay/prepaydata_cor.csv', row.names = T)
+```
+
+## (2) 模型搭建 
+```{r}
+prepaydata_train.index = sample(1:nrow(prepaydata), round(nrow(prepaydata)*0.8))
+prepaydata_train = prepaydata[prepaydata_train.index, ]
+prepaydata_test = prepaydata[-prepaydata_train.index, ]
+
+gbm.model = gbm(add_target ~ ., distribution = "bernoulli", data = prepaydata_train[, prepaydata.numericvars.index[c(1:107, 109:144, 148)]], 
+                n.trees = 100, n.minobsinnode = 10, shrinkage = 0.001, bag.fraction = 0.5, train.fraction = 1, n.cores = 2)
+summary(gbm.model)
+
+
+ks.test(gbm.model$fit[prepaydata_train$add_target == 1], gbm.model$fit[prepaydata_train$add_target == 0])
+
+CatModelPerf(datalist = list(prepaydata_train, prepaydata_test), model = gbm.model, yvar = 'add_target')
+```
+
+
+
+
+
+# 3. 未购买人群分析
+```{r}
+nonprepaydata_varstat = VarStat(nonprepaydata, VarType(nonprepaydata), nstat = c("Miss", "Mean", "Min", "Max", "Median", "Num"))
+nonprepaydata = VarDel(nonprepaydata, nonprepaydata_varstat$num_var_value$Var[nonprepaydata_varstat$num_var_value$Num == 1])
+colnames(nonprepaydata)
+nonprepaydata_iv = CatVarImp(nonprepaydata[, c(3:127, 130)], yvar = 'add_target', method = 'iv', bins = 10)
+for (x in colnames(nonprepaydata)[c(3:127)]) {
+  CShipPlot(nonprepaydata, xvar = x, yvar = 'add_target', bins = 10, pdf = T, savedir = 'D:/play/tap4fun/tap4fun/xxw_testdata/plot/nonprepay/') 
+}
+
+nonprepaydata.numericvars.index = which(VarType(nonprepaydata)$numeric)
+nonprepaydata_iv; write.csv(nonprepaydata_iv[[2]], 'D:/play/tap4fun/tap4fun/xxw_testdata/plot/nonprepay/nonprepaydata_iv.csv', row.names = F)
+nonprepaydata_cor = data.frame(round(cor(nonprepaydata[, nonprepaydata.numericvars.index]),2)); write.csv(nonprepaydata_cor, 'D:/play/tap4fun/tap4fun/xxw_testdata/plot/nonprepay/nonprepaydata_cor.csv', row.names = T)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 4. 预测结果输出
+```{r}
+subdata = predictdata[, c('user_id', 'pay_price')]
+colnames(subdata) = c('user_id', 'prediction_pay_price')
+write.csv(subdata, 'D:/play/tap4fun/result/subdata.csv', row.names = F, quote = F)
+```
+
+
